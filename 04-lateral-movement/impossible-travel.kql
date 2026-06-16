@@ -1,1 +1,46 @@
-
+let timeframe = 24h;
+let travelSpeed = 900.0;
+SigninLogs
+| where TimeGenerated > ago(timeframe)
+| where ResultType == "0"
+| where isnotempty(LocationDetails)
+| extend 
+    Latitude = toreal(LocationDetails.geoCoordinates.latitude),
+    Longitude = toreal(LocationDetails.geoCoordinates.longitude),
+    Country = tostring(LocationDetails.countryOrRegion),
+    City = tostring(LocationDetails.city)
+| where isnotempty(Latitude) and isnotempty(Longitude)
+| project TimeGenerated, UserPrincipalName, IPAddress,
+          Latitude, Longitude, Country, City, AppDisplayName
+| sort by UserPrincipalName asc, TimeGenerated asc
+| serialize
+| extend
+    PrevLatitude = prev(Latitude, 1),
+    PrevLongitude = prev(Longitude, 1),
+    PrevCountry = prev(Country, 1),
+    PrevCity = prev(City, 1),
+    PrevTime = prev(TimeGenerated, 1),
+    PrevUser = prev(UserPrincipalName, 1)
+| where UserPrincipalName == PrevUser
+| where Country != PrevCountry
+| extend TimeDeltaHours = datetime_diff('minute', TimeGenerated, PrevTime) / 60.0
+| where TimeDeltaHours > 0
+| extend DistanceKm = 6371 * 2 * asin(sqrt(
+    pow(sin((Latitude - PrevLatitude) * pi() / 360), 2) +
+    cos(PrevLatitude * pi() / 180) * cos(Latitude * pi() / 180) *
+    pow(sin((Longitude - PrevLongitude) * pi() / 360), 2)))
+| extend RequiredSpeedKmh = DistanceKm / TimeDeltaHours
+| where RequiredSpeedKmh > travelSpeed
+| extend Severity = case(
+    RequiredSpeedKmh > 5000, "High",
+    RequiredSpeedKmh > 2000, "Medium",
+    "Low")
+| project
+    UserPrincipalName,
+    PrevCity, PrevCountry, PrevTime,
+    City, Country, TimeGenerated,
+    TimeDeltaHours = round(TimeDeltaHours, 1),
+    DistanceKm = round(DistanceKm, 0),
+    RequiredSpeedKmh = round(RequiredSpeedKmh, 0),
+    Severity, AppDisplayName, IPAddress
+| order by RequiredSpeedKmh desc
