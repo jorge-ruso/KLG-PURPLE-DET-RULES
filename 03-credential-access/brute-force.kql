@@ -1,1 +1,17 @@
-
+SigninLogs
+| where TimeGenerated > ago(1h)
+| where ResultType != "0"
+| summarize FailedAttempts = count(), 
+            DistinctIPs = dcount(IPAddress),
+            FirstAttempt = min(TimeGenerated),
+            LastAttempt = max(TimeGenerated)
+            by UserPrincipalName, AppDisplayName
+| where FailedAttempts > 10
+| extend TimeDeltaMinutes = datetime_diff('minute', LastAttempt, FirstAttempt)
+| extend Severity = case(
+    FailedAttempts > 50, "High",
+    FailedAttempts > 20, "Medium",
+    "Low")
+| project UserPrincipalName, FailedAttempts, DistinctIPs, 
+          TimeDeltaMinutes, Severity, AppDisplayName
+| order by FailedAttempts desc
