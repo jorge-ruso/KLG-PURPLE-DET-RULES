@@ -1,1 +1,41 @@
-
+let timeframe = 1h;
+let sqlPatterns = dynamic([
+    "' OR ", "' AND ", "1=1", "1 = 1",
+    "UNION SELECT", "UNION ALL SELECT",
+    "DROP TABLE", "INSERT INTO",
+    "xp_cmdshell", "EXEC(",
+    "CAST(", "CONVERT(",
+    "information_schema", "sys.tables",
+    "' --", "';--", "/*", "*/"
+]);
+W3CIISLog
+| where TimeGenerated > ago(timeframe)
+| where csMethod == "GET" or csMethod == "POST"
+| extend DecodedQuery = url_decode(csUriQuery)
+| extend DecodedStem = url_decode(csUriStem)
+| where (
+    (isnotempty(DecodedQuery) and DecodedQuery has_any (sqlPatterns)) or
+    (isnotempty(DecodedStem) and DecodedStem has_any (sqlPatterns)) or
+    (isnotempty(csUriQuery) and csUriQuery has_any (sqlPatterns))
+)
+| summarize
+    AttackCount = count(),
+    DistinctEndpoints = dcount(csUriStem),
+    DistinctPayloads = make_set(DecodedQuery, 10),
+    FirstSeen = min(TimeGenerated),
+    LastSeen = max(TimeGenerated)
+    by cIP, csHost
+| extend DurationMinutes = datetime_diff('minute', LastSeen, FirstSeen)
+| extend AttackType = case(
+    DistinctEndpoints > 5, "Automated SQLi Scanner",
+    DistinctPayloads has "UNION SELECT", "Union-Based SQLi",
+    DistinctPayloads has "1=1", "Boolean-Based SQLi",
+    DistinctPayloads has "xp_cmdshell", "OS Command Injection via SQLi",
+    "Generic SQLi Attempt")
+| extend Severity = case(
+    DistinctPayloads has "xp_cmdshell" or DistinctPayloads has "DROP TABLE", "High",
+    AttackCount > 50 or DistinctEndpoints > 5, "Medium",
+    "Low")
+| project cIP, csHost, AttackCount, DistinctEndpoints,
+          AttackType, Severity, DurationMinutes, DistinctPayloads
+| order by Severity asc, AttackCount desc
